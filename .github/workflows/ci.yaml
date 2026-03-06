@@ -1,0 +1,169 @@
+# ============================================================
+# Enterprise RAG Assistant — CI / CD Pipeline
+# ============================================================
+# ✅ Build & push image multi-arch vers GHCR
+# ✅ Trivy — scan de vulnérabilités (image)
+# ✅ Trivy — scan de misconfiguration (Dockerfile + K8s)
+# ✅ Upload SARIF vers GitHub Security tab
+# ============================================================
+name: CI — Build, Scan & Push
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write   # Pour uploader SARIF
+
+jobs:
+  # ────────────────────────────────────────────────
+  # 1. Lint des manifestes Kubernetes (kubeconform)
+  # ────────────────────────────────────────────────
+  lint-k8s:
+    name: 🔍 Lint K8s Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate K8s manifests
+        run: |
+          kubeconform -strict -summary \
+            -ignore-filename-pattern 'argocd-application.yaml' \
+            k8s/
+
+  # ────────────────────────────────────────────────
+  # 2. Build de l'image Docker
+  # ────────────────────────────────────────────────
+  build:
+    name: 🐳 Build Docker Image
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build-push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push image
+        id: build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ────────────────────────────────────────────────
+  # 3. Trivy — Scan de vulnérabilités (image)
+  # ────────────────────────────────────────────────
+  trivy-image:
+    name: 🛡️ Trivy Image Scan
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image locally for scan
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: rag-assistant:scan
+          cache-from: type=gha
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Run Trivy vulnerability scanner
+        run: |
+          trivy image \
+            --format sarif \
+            --output trivy-image-results.sarif \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --ignore-unfixed \
+            rag-assistant:scan || true
+
+      - name: Upload image scan SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
+
+  # ────────────────────────────────────────────────
+  # 4. Trivy — Scan de misconfiguration (IaC)
+  # ────────────────────────────────────────────────
+  trivy-config:
+    name: 🛡️ Trivy Config Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Scan Dockerfile & IaC configs
+        run: |
+          trivy config \
+            --format sarif \
+            --output trivy-config-results.sarif \
+            --severity CRITICAL,HIGH,MEDIUM \
+            . || true
+
+      - name: Upload config scan SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-config-results.sarif
+          category: trivy-config
+
+      - name: Scan K8s manifests (table view)
+        run: |
+          trivy config \
+            --format table \
+            --severity CRITICAL,HIGH,MEDIUM \
+            k8s/

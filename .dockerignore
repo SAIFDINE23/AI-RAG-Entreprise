@@ -1,0 +1,25 @@
+# Ne pas envoyer au Docker daemon
+.env
+.venv/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+
+# Données runtime (seront dans des volumes)
+chroma_db/
+uploads/
+doc.pdf
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# K8s & CI/CD
+k8s/
+.github/

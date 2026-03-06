@@ -1,0 +1,42 @@
+# ============================================================
+# Enterprise RAG Assistant — Network Policy
+# ============================================================
+# Principe du moindre privilège réseau :
+#   - Autorise uniquement le trafic entrant sur le port 8000
+#   - Autorise le DNS sortant (port 53) et HTTPS sortant (443)
+#     pour les appels API (Groq, Google)
+#   - Bloque tout le reste par défaut
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rag-assistant-netpol
+  namespace: rag-assistant
+  labels:
+    app.kubernetes.io/name: rag-assistant
+    app.kubernetes.io/part-of: enterprise-rag-assistant
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rag-assistant
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Autoriser le trafic HTTP entrant sur le port 8000
+    - ports:
+        - protocol: TCP
+          port: 8000
+
+  egress:
+    # DNS (CoreDNS)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS sortant (API Groq, Google Gemini)
+    - ports:
+        - protocol: TCP
+          port: 443

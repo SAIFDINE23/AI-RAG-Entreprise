@@ -1,0 +1,68 @@
+# ============================================================
+# Enterprise RAG Assistant — Docker Compose (Hardened)
+# ============================================================
+# Sécurité appliquée :
+#   - read_only: true  → filesystem en lecture seule
+#   - tmpfs sur /tmp   → écriture temporaire en mémoire
+#   - no-new-privileges → bloque l'escalade de privilèges
+#   - cap_drop ALL      → supprime toutes les capabilities Linux
+#   - user non-root (1000:1000)
+#   - volumes nommés pour les données persistantes
+# ============================================================
+
+services:
+  rag-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-assistant
+    restart: unless-stopped
+
+    # --- Ports ---
+    ports:
+      - "8000:8000"
+
+    # --- Variables d'environnement ---
+    env_file:
+      - .env
+
+    # --- Sécurité : Container Hardening ---
+    user: "1000:1000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # --- Volumes ---
+    volumes:
+      # Données persistantes (uploads PDF et base vectorielle)
+      - uploads_data:/app/uploads
+      - chroma_data:/app/chroma_db
+    tmpfs:
+      # Répertoire temporaire en mémoire (nécessaire pour FastAPI, ML libs)
+      - /tmp:size=256M,uid=1000,gid=1000
+
+    # --- Healthcheck ---
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # --- Ressources (optionnel, utile pour K8s aussi) ---
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+
+volumes:
+  uploads_data:
+    driver: local
+  chroma_data:
+    driver: local

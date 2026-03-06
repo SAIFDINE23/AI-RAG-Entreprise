@@ -1,0 +1,41 @@
+# ============================================================
+# Enterprise RAG Assistant — ArgoCD Application
+# ============================================================
+# Ce fichier est à appliquer dans le namespace argocd :
+#   kubectl apply -f k8s/argocd-application.yaml -n argocd
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rag-assistant
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: enterprise-rag-assistant
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/SAIFDINE23/AI-RAG-Entreprise.git
+    targetRevision: main
+    path: k8s
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rag-assistant
+
+  syncPolicy:
+    automated:
+      prune: true        # Supprime les ressources orphelines
+      selfHeal: true     # Re-synchronise en cas de drift
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m

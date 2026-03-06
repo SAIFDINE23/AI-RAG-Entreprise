@@ -1,0 +1,29 @@
+# Environment variables (contains API keys)
+.env
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# ChromaDB persistent storage
+chroma_db/
+
+# Uploaded files
+uploads/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PDF documents (optional — remove if you want to track them)
+*.pdf

@@ -1,0 +1,144 @@
+# ============================================================
+# Enterprise RAG Assistant — Kubernetes Deployment (Hardened)
+# ============================================================
+# Sécurité appliquée :
+#   - runAsNonRoot: true / runAsUser: 1000
+#   - allowPrivilegeEscalation: false
+#   - capabilities: drop ALL
+#   - readOnlyRootFilesystem: true
+#   - emptyDir pour /tmp, /app/uploads, /app/chroma_db
+#   - Resource limits CPU & mémoire
+#   - Liveness & Readiness probes
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-assistant
+  namespace: rag-assistant
+  labels:
+    app.kubernetes.io/name: rag-assistant
+    app.kubernetes.io/part-of: enterprise-rag-assistant
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag-assistant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rag-assistant
+        app.kubernetes.io/part-of: enterprise-rag-assistant
+    spec:
+      # --------------------------------------------------
+      # Pod-level Security Context
+      # --------------------------------------------------
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Empêcher le scheduling sur un nœud root-only
+      automountServiceAccountToken: false
+
+      containers:
+        - name: rag-assistant
+          image: ghcr.io/saifdine23/ai-rag-entreprise:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+              name: http
+
+          # ------------------------------------------------
+          # Container-level Security Context (Hardening)
+          # ------------------------------------------------
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # ------------------------------------------------
+          # Variables d'environnement (depuis le Secret)
+          # ------------------------------------------------
+          envFrom:
+            - secretRef:
+                name: rag-assistant-secrets
+
+          # ------------------------------------------------
+          # Resource Limits & Requests
+          # ------------------------------------------------
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          # ------------------------------------------------
+          # Probes — Health Checks
+          # ------------------------------------------------
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # ------------------------------------------------
+          # Volume Mounts — Contourne readOnlyRootFilesystem
+          # FastAPI et les libs ML ont besoin d'écrire dans :
+          #   /tmp        → fichiers temporaires, cache Python
+          #   /app/uploads   → PDFs uploadés
+          #   /app/chroma_db → base vectorielle persistante
+          # ------------------------------------------------
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: uploads-volume
+              mountPath: /app/uploads
+            - name: chroma-volume
+              mountPath: /app/chroma_db
+
+      # --------------------------------------------------
+      # Volumes
+      # --------------------------------------------------
+      volumes:
+        # /tmp — éphémère, purgé au restart du pod
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 256Mi
+
+        # /app/uploads — persistant via PVC si nécessaire,
+        # emptyDir pour le dev/test
+        - name: uploads-volume
+          emptyDir:
+            sizeLimit: 512Mi
+
+        # /app/chroma_db — base vectorielle
+        # En production, utiliser un PVC pour la persistance
+        - name: chroma-volume
+          emptyDir:
+            sizeLimit: 1Gi

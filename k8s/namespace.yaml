@@ -1,0 +1,9 @@
+# ============================================================
+# Enterprise RAG Assistant — Kubernetes Namespace
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rag-assistant
+  labels:
+    app.kubernetes.io/part-of: enterprise-rag-assistant

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Assistant</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- Header --- */
+        header {
+            background: #1e293b;
+            border-bottom: 1px solid #334155;
+            padding: 14px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .logo {
+            width: 38px; height: 38px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px;
+        }
+        header h1 { font-size: 17px; font-weight: 600; }
+        .badge {
+            font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: 500;
+        }
+        .badge.online { background: #22c55e20; color: #4ade80; }
+        .badge.doc {
+            background: #6366f120; color: #a5b4fc; margin-left: auto;
+            max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+
+        /* --- Main layout --- */
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* --- Upload screen --- */
+        #upload-screen {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+        .upload-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 20px;
+            padding: 48px;
+            text-align: center;
+            max-width: 520px;
+            width: 100%;
+        }
+        .upload-icon { font-size: 56px; margin-bottom: 20px; }
+        .upload-card h2 { font-size: 22px; margin-bottom: 8px; }
+        .upload-card p { color: #94a3b8; font-size: 14px; margin-bottom: 28px; line-height: 1.6; }
+
+        .drop-zone {
+            border: 2px dashed #334155;
+            border-radius: 16px;
+            padding: 40px 24px;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: #6366f1;
+            background: #6366f108;
+        }
+        .drop-zone input { display: none; }
+        .drop-zone .icon { font-size: 32px; margin-bottom: 12px; }
+        .drop-zone .text { color: #94a3b8; font-size: 14px; }
+        .drop-zone .text span { color: #818cf8; text-decoration: underline; cursor: pointer; }
+
+        /* Progress */
+        .progress-container { display: none; margin-top: 24px; }
+        .progress-bar {
+            height: 6px; background: #334155; border-radius: 3px; overflow: hidden;
+        }
+        .progress-bar .fill {
+            height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6);
+            border-radius: 3px; width: 0%; transition: width 0.5s;
+        }
+        .progress-text {
+            margin-top: 10px; font-size: 13px; color: #94a3b8;
+        }
+        .progress-text.error { color: #f87171; }
+        .progress-text.success { color: #4ade80; }
+
+        /* --- Chat screen --- */
+        #chat-screen { flex: 1; display: none; flex-direction: column; overflow: hidden; }
+
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            max-width: 75%;
+            padding: 14px 18px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.7;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message.user {
+            align-self: flex-end;
+            background: #6366f1;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .message.bot {
+            align-self: flex-start;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-bottom-left-radius: 4px;
+        }
+        .message.bot .label {
+            font-size: 11px; color: #8b5cf6; font-weight: 600;
+            margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .message.system {
+            align-self: center;
+            background: #22c55e15;
+            border: 1px solid #22c55e30;
+            color: #4ade80;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        /* Typing */
+        .typing {
+            display: flex; gap: 5px; padding: 14px 18px; align-self: flex-start;
+            background: #1e293b; border: 1px solid #334155;
+            border-radius: 16px; border-bottom-left-radius: 4px;
+        }
+        .typing span {
+            width: 8px; height: 8px; background: #6366f1;
+            border-radius: 50%; animation: bounce 1.4s infinite;
+        }
+        .typing span:nth-child(2) { animation-delay: 0.2s; }
+        .typing span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-8px); }
+        }
+
+        /* Suggestions */
+        .suggestions {
+            display: flex; flex-wrap: wrap; gap: 8px;
+            justify-content: center; padding: 0 24px;
+        }
+        .suggestions button {
+            background: #1e293b; border: 1px solid #334155; color: #cbd5e1;
+            padding: 8px 16px; border-radius: 20px; font-size: 13px;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .suggestions button:hover { border-color: #6366f1; color: #a5b4fc; }
+
+        /* Input area */
+        #input-area {
+            background: #1e293b; border-top: 1px solid #334155;
+            padding: 16px 24px; display: flex; gap: 12px; align-items: center;
+            flex-shrink: 0;
+        }
+        #input-area input {
+            flex: 1; background: #0f172a; border: 1px solid #334155;
+            color: #e2e8f0; padding: 14px 18px; border-radius: 12px;
+            font-size: 14px; outline: none; transition: border-color 0.2s;
+        }
+        #input-area input:focus { border-color: #6366f1; }
+        #input-area input::placeholder { color: #475569; }
+
+        .btn-icon {
+            border: none; color: white; width: 48px; height: 48px;
+            border-radius: 12px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.2s;
+        }
+        .btn-send { background: #6366f1; }
+        .btn-send:hover { background: #4f46e5; }
+        .btn-send:disabled { background: #334155; cursor: not-allowed; }
+        .btn-upload-new { background: #475569; }
+        .btn-upload-new:hover { background: #64748b; }
+        .btn-icon svg { width: 20px; height: 20px; }
+
+        /* Scrollbar */
+        #chat::-webkit-scrollbar { width: 6px; }
+        #chat::-webkit-scrollbar-track { background: transparent; }
+        #chat::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="logo">🤖</div>
+    <h1>RAG Assistant</h1>
+    <span class="badge online">● En ligne</span>
+    <span class="badge doc" id="doc-badge" style="display:none"></span>
+</header>
+
+<main>
+    <!-- ===== UPLOAD SCREEN ===== -->
+    <div id="upload-screen">
+        <div class="upload-card">
+            <div class="upload-icon">📄</div>
+            <h2>Chargez votre document</h2>
+            <p>Uploadez un fichier PDF pour commencer l'analyse.<br>L'assistant répondra à vos questions sur son contenu.</p>
+
+            <div class="drop-zone" id="drop-zone">
+                <input type="file" id="file-input" accept=".pdf" />
+                <div class="icon">⬆️</div>
+                <div class="text">
+                    Glissez-déposez votre PDF ici<br>
+                    ou <span onclick="document.getElementById('file-input').click()">parcourez vos fichiers</span>
+                </div>
+            </div>
+
+            <div class="progress-container" id="progress-container">
+                <div class="progress-bar"><div class="fill" id="progress-fill"></div></div>
+                <div class="progress-text" id="progress-text">Préparation...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== CHAT SCREEN ===== -->
+    <div id="chat-screen">
+        <div id="chat"></div>
+
+        <div class="suggestions" id="suggestions">
+            <button onclick="askSuggestion(this)">Résume le document</button>
+            <button onclick="askSuggestion(this)">Quels sont les points clés ?</button>
+            <button onclick="askSuggestion(this)">Quel est le sujet principal ?</button>
+        </div>
+
+        <div id="input-area">
+            <button class="btn-icon btn-upload-new" onclick="showUpload()" title="Charger un autre PDF">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+            </button>
+            <input type="text" id="question" placeholder="Posez votre question sur le document..." autocomplete="off" />
+            <button class="btn-icon btn-send" id="send-btn" onclick="sendQuestion()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+            </button>
+        </div>
+    </div>
+</main>
+
+<script>
+    const uploadScreen = document.getElementById("upload-screen");
+    const chatScreen = document.getElementById("chat-screen");
+    const chat = document.getElementById("chat");
+    const input = document.getElementById("question");
+    const sendBtn = document.getElementById("send-btn");
+    const suggestions = document.getElementById("suggestions");
+    const docBadge = document.getElementById("doc-badge");
+    const dropZone = document.getElementById("drop-zone");
+    const fileInput = document.getElementById("file-input");
+    const progressContainer = document.getElementById("progress-container");
+    const progressFill = document.getElementById("progress-fill");
+    const progressText = document.getElementById("progress-text");
+
+    // --- Check if a doc is already loaded ---
+    (async () => {
+        try {
+            const res = await fetch("/api/status");
+            const data = await res.json();
+            if (data.ready) {
+                showChat(data.filename, data.pages, data.chunks);
+            }
+        } catch (e) {}
+    })();
+
+    // --- Drag & Drop ---
+    dropZone.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+    dropZone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dropZone.classList.remove("dragover");
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener("change", () => {
+        if (fileInput.files.length) handleFile(fileInput.files[0]);
+    });
+
+    async function handleFile(file) {
+        if (!file.name.toLowerCase().endsWith(".pdf")) {
+            showProgress("❌ Seuls les fichiers PDF sont acceptés.", "error");
+            return;
+        }
+
+        progressContainer.style.display = "block";
+        showProgress("📤 Upload en cours...", "", 10);
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+            showProgress("🔍 Analyse et vectorisation du document...", "", 40);
+
+            const res = await fetch("/api/upload", { method: "POST", body: formData });
+
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Erreur serveur");
+            }
+
+            const data = await res.json();
+            showProgress(`✅ ${data.message} — ${data.pages} pages, ${data.chunks} chunks`, "success", 100);
+
+            setTimeout(() => showChat(file.name, data.pages, data.chunks), 1200);
+
+        } catch (err) {
+            showProgress("❌ " + err.message, "error", 0);
+        }
+    }
+
+    function showProgress(text, cls, pct) {
+        progressContainer.style.display = "block";
+        progressText.textContent = text;
+        progressText.className = "progress-text " + cls;
+        if (pct !== undefined) progressFill.style.width = pct + "%";
+    }
+
+    // --- Screens ---
+    function showChat(filename, pages, chunks) {
+        uploadScreen.style.display = "none";
+        chatScreen.style.display = "flex";
+        docBadge.style.display = "inline";
+        docBadge.textContent = `📄 ${filename || "Document"}${pages ? " • " + pages + " pages" : ""} • ${chunks} chunks`;
+
+        chat.innerHTML = "";
+        addMessage(`Document chargé avec succès ! Posez vos questions.`, "system");
+    }
+
+    function showUpload() {
+        uploadScreen.style.display = "flex";
+        chatScreen.style.display = "none";
+        docBadge.style.display = "none";
+        progressContainer.style.display = "none";
+        progressFill.style.width = "0%";
+        fileInput.value = "";
+    }
+
+    // --- Chat ---
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
+    });
+
+    function askSuggestion(btn) {
+        input.value = btn.textContent;
+        sendQuestion();
+    }
+
+    async function sendQuestion() {
+        const question = input.value.trim();
+        if (!question) return;
+
+        suggestions.style.display = "none";
+        addMessage(question, "user");
+        input.value = "";
+        sendBtn.disabled = true;
+
+        const typing = showTyping();
+
+        try {
+            const res = await fetch("/api/ask", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question }),
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || `Erreur ${res.status}`);
+            }
+
+            const data = await res.json();
+            typing.remove();
+            addMessage(data.answer, "bot");
+        } catch (err) {
+            typing.remove();
+            addMessage("❌ " + err.message, "bot");
+        } finally {
+            sendBtn.disabled = false;
+            input.focus();
+        }
+    }
+
+    function addMessage(text, role) {
+        const div = document.createElement("div");
+        div.className = `message ${role}`;
+        if (role === "bot") {
+            div.innerHTML = `<div class="label">Assistant</div>${formatText(text)}`;
+        } else if (role === "system") {
+            div.textContent = text;
+        } else {
+            div.textContent = text;
+        }
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+    }
+
+    function showTyping() {
+        const div = document.createElement("div");
+        div.className = "typing";
+        div.innerHTML = "<span></span><span></span><span></span>";
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+        return div;
+    }
+
+    function formatText(text) {
+        return text
+            .replace(/\n/g, "<br>")
+            .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+            .replace(/\*(.*?)\*/g, "<em>$1</em>");
+    }
+</script>
+</body>
+</html>
