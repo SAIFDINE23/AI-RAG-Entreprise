@@ -1,0 +1,275 @@
+# ============================================================
+# Enterprise RAG Assistant — Ansible Playbook
+# ============================================================
+# Déploie sur l'EC2 AWS :
+#   1. Prérequis système (swap 1G, Docker)
+#   2. K3s (Kubernetes léger)
+#   3. ArgoCD en mode minimal
+#   4. Application RAG via kubectl
+# ============================================================
+---
+- name: Deploy RAG Assistant with K3s + ArgoCD on AWS EC2
+  hosts: rag_assistant
+  become: true
+  gather_facts: true
+
+  vars:
+    google_api_key: "{{ lookup('env', 'GOOGLE_API_KEY') }}"
+    groq_api_key: "{{ lookup('env', 'GROQ_API_KEY') }}"
+    github_repo: "https://github.com/SAIFDINE23/AI-RAG-Entreprise.git"
+
+  tasks:
+    # ────────────────────────────────────────────────
+    # 0. Attendre que l'EC2 soit vraiment prête
+    # ────────────────────────────────────────────────
+    - name: Attendre que cloud-init soit terminé
+      shell: cloud-init status --wait
+      changed_when: false
+      timeout: 300
+
+    - name: Attendre que dpkg soit libre (pas d'apt en cours)
+      shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+      changed_when: false
+      timeout: 120
+
+    # ────────────────────────────────────────────────
+    # 1. Prérequis système
+    # ────────────────────────────────────────────────
+    - name: Mettre à jour APT cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Installer les dépendances système
+      apt:
+        name:
+          - curl
+          - git
+          - unzip
+          - jq
+        state: present
+
+    - name: Créer un fichier de swap (1 Go)
+      shell: |
+        if [ ! -f /swapfile ]; then
+          fallocate -l 1G /swapfile
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        fi
+      args:
+        creates: /swapfile
+
+    # ────────────────────────────────────────────────
+    # 1b. Installation Docker (nécessaire pour build l'image)
+    # ────────────────────────────────────────────────
+    - name: Vérifier si Docker est déjà installé
+      stat:
+        path: /usr/bin/docker
+      register: docker_binary
+
+    - name: Installer Docker via script officiel
+      shell: curl -fsSL https://get.docker.com | sh
+      when: not docker_binary.stat.exists
+
+    - name: Ajouter ubuntu au groupe docker
+      user:
+        name: ubuntu
+        groups: docker
+        append: true
+
+    # ────────────────────────────────────────────────
+    # 2. Installation K3s
+    # ────────────────────────────────────────────────
+    - name: Vérifier si K3s est déjà installé
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Installer K3s (sans Traefik, sans metrics-server)
+      shell: |
+        curl -sfL https://get.k3s.io | sh -s - \
+          --write-kubeconfig-mode 644 \
+          --disable traefik \
+          --disable metrics-server
+      when: not k3s_binary.stat.exists
+
+    - name: Attendre que K3s soit prêt
+      wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        state: present
+        timeout: 120
+
+    - name: Attendre que le node soit Ready
+      shell: kubectl get nodes --no-headers | grep -q ' Ready '
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      retries: 30
+      delay: 5
+      register: node_ready
+      until: node_ready.rc == 0
+      changed_when: false
+
+    # FIX Bug #3 : Créer .kube AVANT de copier le kubeconfig
+    - name: Créer le répertoire .kube
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Copier kubeconfig pour l'utilisateur ubuntu
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+
+    # ────────────────────────────────────────────────
+    # 3. Installation ArgoCD
+    # ────────────────────────────────────────────────
+    - name: Créer namespace argocd
+      shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Installer ArgoCD (version stable, server-side apply pour les gros CRDs)
+      shell: |
+        kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Attendre que tous les pods ArgoCD soient prêts
+      shell: |
+        kubectl wait --for=condition=ready pod --all -n argocd --timeout=300s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      retries: 5
+      delay: 15
+      register: argocd_ready
+      until: argocd_ready.rc == 0
+
+    # FIX Bug #2 : NodePort 30443 (dans le range valide 30000-32767)
+    - name: Exposer ArgoCD UI via NodePort 30443
+      shell: |
+        kubectl patch svc argocd-server -n argocd \
+          -p '{"spec": {"type": "NodePort", "ports": [{"port": 443, "targetPort": 8080, "nodePort": 30443, "protocol": "TCP", "name": "https"}]}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Désactiver la redirection HTTPS d'ArgoCD (accès HTTP direct)
+      shell: |
+        kubectl -n argocd patch configmap argocd-cmd-params-cm \
+          --type merge -p '{"data":{"server.insecure":"true"}}' && \
+        kubectl -n argocd rollout restart deployment argocd-server && \
+        kubectl -n argocd wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server --timeout=120s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Récupérer le mot de passe initial ArgoCD
+      shell: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      register: argocd_password
+      changed_when: false
+
+    # ────────────────────────────────────────────────
+    # 4. Déploiement de l'application RAG
+    # ────────────────────────────────────────────────
+    - name: Cloner le repository GitHub
+      git:
+        repo: "{{ github_repo }}"
+        dest: /home/ubuntu/AI-RAG-Entreprise
+        version: main
+        force: true
+      become_user: ubuntu
+
+    - name: Créer namespace rag-assistant
+      shell: kubectl create namespace rag-assistant --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Créer le secret avec les clés API
+      shell: |
+        kubectl create secret generic rag-assistant-secrets \
+          --from-literal=GOOGLE_API_KEY="{{ google_api_key }}" \
+          --from-literal=GROQ_API_KEY="{{ groq_api_key }}" \
+          -n rag-assistant \
+          --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      when: google_api_key != "" and groq_api_key != ""
+
+    # FIX Bug #4 : docker build en root (pas become_user: ubuntu)
+    - name: Construire l'image Docker
+      shell: |
+        cd /home/ubuntu/AI-RAG-Entreprise
+        docker build -t rag-assistant:latest .
+
+    - name: Importer l'image dans K3s (containerd)
+      shell: |
+        docker save rag-assistant:latest | k3s ctr images import -
+
+    - name: Adapter les manifestes pour K3s local
+      shell: |
+        cd /home/ubuntu/AI-RAG-Entreprise
+        sed -i 's|ghcr.io/saifdine23/ai-rag-entreprise:latest|rag-assistant:latest|' k8s/deployment.yaml
+        sed -i 's|imagePullPolicy: Always|imagePullPolicy: Never|' k8s/deployment.yaml
+
+    - name: Déployer les manifestes K8s
+      shell: |
+        cd /home/ubuntu/AI-RAG-Entreprise
+        kubectl apply -f k8s/namespace.yaml
+        kubectl apply -f k8s/networkpolicy.yaml
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Exposer l'application via NodePort 30080
+      shell: |
+        kubectl patch svc rag-assistant -n rag-assistant \
+          -p '{"spec": {"type": "NodePort", "ports": [{"port": 80, "targetPort": 8000, "nodePort": 30080, "protocol": "TCP", "name": "http"}]}}'
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Attendre que l'application soit prête
+      shell: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=rag-assistant -n rag-assistant --timeout=180s
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      retries: 3
+      delay: 10
+      register: app_ready
+      until: app_ready.rc == 0
+
+    # ────────────────────────────────────────────────
+    # 5. Résumé final
+    # ────────────────────────────────────────────────
+    # FIX Bug #8 : Utiliser EC2 metadata pour l'IP publique (pas l'IP privée)
+    - name: Récupérer l'IP publique EC2 via metadata
+      shell: |
+        TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+        curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4
+      register: ec2_public_ip
+      changed_when: false
+
+    - name: Afficher le résumé du déploiement
+      debug:
+        msg:
+          - "╔══════════════════════════════════════════════════════╗"
+          - "║   DÉPLOIEMENT RÉUSSI ✅                              ║"
+          - "╚══════════════════════════════════════════════════════╝"
+          - ""
+          - "🌐 Application RAG: http://{{ ec2_public_ip.stdout }}:30080/static/index.html"
+          - "🔧 ArgoCD UI: http://{{ ec2_public_ip.stdout }}:30443"
+          - "   └─ User: admin"
+          - "   └─ Pass: {{ argocd_password.stdout }}"
+          - ""
+          - "📝 SSH: ssh -i ../terraform/rag-assistant-key.pem ubuntu@{{ ec2_public_ip.stdout }}"
+          - "🔍 Logs: kubectl logs -n rag-assistant -l app.kubernetes.io/name=rag-assistant"
+          - ""
+          - "⚠️  N'oublie pas 'terraform destroy' quand tu as fini !"

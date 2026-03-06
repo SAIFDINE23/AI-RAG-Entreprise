@@ -1,6 +1,17 @@
 # Environment variables (contains API keys)
 .env
 
+# Terraform generated & sensitive files (garder les .tf dans git)
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/rag-assistant-key.pem
+*.pem
+
+# Ansible generated files
+ansible/inventory.ini
+
 # Python virtual environment
 .venv/
 venv/
